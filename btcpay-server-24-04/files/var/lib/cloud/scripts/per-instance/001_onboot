@@ -1,0 +1,13 @@
+#!/bin/sh
+
+sed -e '/Match User root/d' \
+    -e '/.*ForceCommand.*droplet.*/d' \
+    -i /etc/ssh/sshd_config
+
+systemctl restart ssh
+
+cat >> /root/.bashrc <<'EOM'
+if [ ! -f /root/.btcpay-domain-configured ]; then
+    /root/configure-domain.sh
+fi
+EOM

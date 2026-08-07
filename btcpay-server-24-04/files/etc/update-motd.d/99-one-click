@@ -1,0 +1,34 @@
+#!/bin/sh
+
+myip=$(hostname -I | awk '{print$1}')
+cat <<EOF
+********************************************************************************
+
+Welcome to DigitalOcean's One-Click BTCPay Server Droplet.
+To keep this Droplet secure, the UFW firewall is enabled.
+All ports are BLOCKED except 22 (SSH), 80 (HTTP), and 443 (HTTPS).
+
+BEFORE YOU CONTINUE:
+BTCPay Server requires a domain name pointed at this Droplet's IP
+address ($myip) before it can start. This is required for HTTPS.
+
+  1. In your domain registrar / DNS provider, add an A record
+     pointing your domain (or subdomain) at: $myip
+  2. Wait for DNS to propagate (a few minutes, sometimes longer)
+  3. Continue below, the setup wizard will ask for your domain
+
+AUTOMATIC SETUP:
+ * The domain setup wizard will launch now (first login only)
+ * It checks that your domain actually resolves to this Droplet
+   before installing anything
+ * Once confirmed, it installs BTCPay Server with HTTPS in one step
+ * Bitcoin node is pruned by default (~3 months of blocks, ~25GB)
+   to keep disk usage reasonable on a standard droplet
+ * If your DNS isn't ready yet, you can exit and rerun it later with:
+     sudo /root/configure-domain.sh
+
+For help and more information, visit https://docs.btcpayserver.org
+
+********************************************************************************
+To delete this message of the day: rm -rf $(readlink -f ${0})
+EOF

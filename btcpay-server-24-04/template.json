@@ -1,0 +1,96 @@
+{
+  "variables": {
+    "do_api_token": "{{env `DIGITALOCEAN_API_TOKEN`}}",
+    "image_name": "btcpay-server-24-04-snapshot-{{timestamp}}",
+    "apt_packages": "git jq apt-transport-https ca-certificates curl software-properties-common",
+    "application_name": "BTCPay Server",
+    "application_version": "2.4.1",
+    "docker_compose_version": ""
+  },
+  "sensitive-variables": ["do_api_token"],
+  "builders": [
+    {
+      "type": "digitalocean",
+      "api_token": "{{user `do_api_token`}}",
+      "image": "ubuntu-24-04-x64",
+      "region": "nyc3",
+      "size": "s-1vcpu-2gb",
+      "ssh_username": "root",
+      "snapshot_name": "{{user `image_name`}}"
+    }
+  ],
+  "provisioners": [
+    {
+      "type": "shell",
+      "inline": [
+        "cloud-init status --wait"
+      ]
+    },
+    {
+      "type": "file",
+      "source": "common/files/var/",
+      "destination": "/var/"
+    },
+    {
+      "type": "file",
+      "source": "btcpay-server-24-04/files/etc/",
+      "destination": "/etc/"
+    },
+    {
+      "type": "file",
+      "source": "btcpay-server-24-04/files/root/",
+      "destination": "/root/"
+    },
+    {
+      "type": "file",
+      "source": "btcpay-server-24-04/files/var/",
+      "destination": "/var/"
+    },
+    {
+      "type": "shell",
+      "inline": [
+        "chmod +x /root/configure-domain.sh",
+        "chmod +x /var/lib/cloud/scripts/per-instance/001_onboot",
+        "chmod +x /etc/update-motd.d/99-one-click",
+        "ls -la /root/configure-domain.sh /var/lib/cloud/scripts/per-instance/001_onboot /etc/update-motd.d/99-one-click"
+      ]
+    },
+    {
+      "type": "shell",
+      "environment_vars": [
+        "DEBIAN_FRONTEND=noninteractive",
+        "LC_ALL=C",
+        "LANG=en_US.UTF-8",
+        "LC_CTYPE=en_US.UTF-8"
+      ],
+      "inline": [
+        "apt -qqy update",
+        "apt -qqy -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' full-upgrade",
+        "apt -qqy -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' install {{user `apt_packages`}}",
+        "apt-get -qqy clean"
+      ]
+    },
+    {
+      "type": "shell",
+      "environment_vars": [
+        "application_name={{user `application_name`}}",
+        "application_version={{user `application_version`}}",
+        "docker_compose_version={{user `docker_compose_version`}}",
+        "DEBIAN_FRONTEND=noninteractive",
+        "LC_ALL=C",
+        "LANG=en_US.UTF-8",
+        "LC_CTYPE=en_US.UTF-8"
+      ],
+      "scripts": [
+        "common/scripts/010-docker.sh",
+        "common/scripts/011-docker-compose.sh",
+        "btcpay-server-24-04/scripts/030-clone-btcpay.sh",
+        "btcpay-server-24-04/scripts/014-ufw-web.sh",
+        "btcpay-server-24-04/scripts/015-ufw-lightning.sh",
+        "common/scripts/018-force-ssh-logout.sh",
+        "common/scripts/020-application-tag.sh",
+        "common/scripts/900-cleanup.sh"
+      ]
+    }
+  ]
+}
