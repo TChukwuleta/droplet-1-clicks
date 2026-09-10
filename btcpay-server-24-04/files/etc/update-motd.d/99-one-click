@@ -19,6 +19,8 @@ address ($myip) before it can start. This is required for HTTPS.
 
 AUTOMATIC SETUP:
  * The domain setup wizard will launch now (first login only)
+ * It asks which Lightning implementation you want (CLN, LND, or
+   phoenixd)
  * It checks that your domain actually resolves to this Droplet
    before installing anything
  * Once confirmed, it installs BTCPay Server with HTTPS in one step
