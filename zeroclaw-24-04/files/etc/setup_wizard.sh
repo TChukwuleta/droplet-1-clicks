@@ -15,23 +15,26 @@ remove_first_login_hook() {
   fi
 }
 
-gradient_already_configured() {
+inference_already_configured() {
   local api_key
   [ -f "$CONFIG_FILE" ] || return 1
-  api_key=$(grep -E '^api_key\s*=' "$CONFIG_FILE" 2>/dev/null | tail -n 1 | sed 's/^api_key\s*=\s*"\?\([^"]*\)"\?.*/\1/') || return 1
+  # Schema V3 requires a configured agent plus a usable provider api_key.
+  grep -qE '^\[agents\.' "$CONFIG_FILE" 2>/dev/null || return 1
+  api_key=$(grep -E '^api_key[[:space:]]*=' "$CONFIG_FILE" 2>/dev/null | head -n 1 | sed -E 's/^api_key[[:space:]]*=[[:space:]]*"?([^"]*)"?.*/\1/') || return 1
   case "$api_key" in
     ''|PLACEHOLDER|*'${'*) return 1 ;;
   esac
   return 0
 }
 
-write_gradient_env_key() {
-  local key="$1" model="$2"
+write_inference_env_key() {
+  local key="$1" model="$2" router="${3-}"
   umask 077
   touch "$ENV_FILE"
-  grep -Ev '^(GRADIENT_KEY|GRADIENT_MODEL)=' "$ENV_FILE" >"${ENV_FILE}.tmp" 2>/dev/null || : >"${ENV_FILE}.tmp"
-  printf 'GRADIENT_KEY=%q\n' "$key" >>"${ENV_FILE}.tmp"
-  printf 'GRADIENT_MODEL=%q\n' "$model" >>"${ENV_FILE}.tmp"
+  grep -Ev '^(MODEL_ACCESS_KEY|INFERENCE_MODEL|DO_INFERENCE_ROUTER)=' "$ENV_FILE" >"${ENV_FILE}.tmp" 2>/dev/null || : >"${ENV_FILE}.tmp"
+  printf 'MODEL_ACCESS_KEY=%q\n' "$key" >>"${ENV_FILE}.tmp"
+  printf 'INFERENCE_MODEL=%q\n' "$model" >>"${ENV_FILE}.tmp"
+  printf 'DO_INFERENCE_ROUTER=%q\n' "$router" >>"${ENV_FILE}.tmp"
   mv "${ENV_FILE}.tmp" "$ENV_FILE"
   chmod 600 "$ENV_FILE"
 }
@@ -39,43 +42,44 @@ write_gradient_env_key() {
 DROPL_IP=$(hostname -I | awk '{print$1}')
 
 if [ "$1" != "--force" ]; then
-  if [ -f "$SETUP_MARKER" ] || gradient_already_configured; then
+  if [ -f "$SETUP_MARKER" ] || inference_already_configured; then
     echo "ZeroClaw provider is already configured. Skipping setup."
     remove_first_login_hook
     exit 0
   fi
-  if [ -x /opt/apply-gradient-from-env.sh ] && /opt/apply-gradient-from-env.sh; then
+  if [ -x /opt/apply-inference-from-env.sh ] && /opt/apply-inference-from-env.sh; then
     remove_first_login_hook
     exit 0
   fi
 fi
 
 PS3="Select a provider (1-4): "
-options=("DigitalOcean Gradient" "OpenAI" "Anthropic" "OpenRouter")
+options=("DigitalOcean Serverless Inference" "OpenAI" "Anthropic" "OpenRouter")
 
 echo "--- ZeroClaw AI Provider Setup ---"
 
 selected_provider="n/a"
 onboard_provider=""
 onboard_model=""
+onboard_router=""
 
 select opt in "${options[@]}"
 do
   case $opt in
-    "DigitalOcean Gradient")
-        selected_provider="DigitalOcean Gradient"
+    "DigitalOcean Serverless Inference")
+        selected_provider="DigitalOcean Serverless Inference"
         onboard_provider="custom:https://inference.do-ai.run/v1"
-        echo "You selected DigitalOcean Gradient."
+        echo "You selected DigitalOcean Serverless Inference."
         echo ""
-        echo "Choose a Gradient inference model (default: Kimi K2.5):"
-        PS3="Select model (1-4): "
-        gradient_options=("Kimi K2.5" "MiniMax M2.5" "GLM 5" "Claude Sonnet 4.5")
-        select gopt in "${gradient_options[@]}"
+        echo "Choose a serverless inference model (default: Kimi K3):"
+        PS3="Select model (1-5): "
+        inference_options=("Kimi K3" "MiniMax M2.5" "GLM-5.3" "Claude Sonnet 4.5" "Intelligent Inference Router")
+        select gopt in "${inference_options[@]}"
         do
           case $gopt in
-            "Kimi K2.5")
-              onboard_model="kimi-k2.5"
-              echo "Using Kimi K2.5 (kimi-k2.5)."
+            "Kimi K3")
+              onboard_model="kimi-k3"
+              echo "Using Kimi K3 (kimi-k3)."
               break 2
               ;;
             "MiniMax M2.5")
@@ -83,14 +87,31 @@ do
               echo "Using MiniMax M2.5 (minimax-m2.5)."
               break 2
               ;;
-            "GLM 5")
-              onboard_model="glm-5"
-              echo "Using GLM 5 (glm-5)."
+            "GLM-5.3")
+              onboard_model="glm-5.3"
+              echo "Using GLM-5.3 (glm-5.3)."
               break 2
               ;;
             "Claude Sonnet 4.5")
               onboard_model="anthropic-claude-4.5-sonnet"
               echo "Using Claude Sonnet 4.5 (anthropic-claude-4.5-sonnet)."
+              break 2
+              ;;
+            "Intelligent Inference Router")
+              echo ""
+              echo "Create a router under Inference > Routers, then enter its name."
+              read -rp "Router name: " ROUTER_NAME
+              ROUTER_NAME="${ROUTER_NAME#digitalocean/}"
+              ROUTER_NAME="${ROUTER_NAME#openai/}"
+              ROUTER_NAME="${ROUTER_NAME#router:}"
+              if [ -n "$ROUTER_NAME" ]; then
+                onboard_model="router:${ROUTER_NAME}"
+                onboard_router="$ROUTER_NAME"
+                echo "Using Intelligent Inference Router (router:${ROUTER_NAME})."
+              else
+                onboard_model="kimi-k3"
+                echo "No router name entered; keeping Kimi K3."
+              fi
               break 2
               ;;
             *)
@@ -127,7 +148,7 @@ do
 done
 
 if [[ "$onboard_provider" == "custom:https://inference.do-ai.run/v1" && -z "$onboard_model" ]]; then
-  onboard_model="kimi-k2.5"
+  onboard_model="kimi-k3"
 fi
 
 echo ""
@@ -144,10 +165,16 @@ done
 [ -n "${old_histfile:-}" ] && export HISTFILE="$old_histfile"
 
 if [[ "$onboard_provider" == "custom:https://inference.do-ai.run/v1" ]]; then
-  write_gradient_env_key "$model_access_key" "$onboard_model"
-  /opt/apply-gradient-from-env.sh
+  write_inference_env_key "$model_access_key" "$onboard_model" "$onboard_router"
+  if ! /opt/apply-inference-from-env.sh; then
+    echo "Failed to apply DigitalOcean Serverless Inference. Check /tmp/zeroclaw-onboard.log" >&2
+    exit 1
+  fi
 else
-  /opt/zeroclaw-run-onboard.sh "$model_access_key" "$onboard_provider" "$onboard_model"
+  if ! /opt/zeroclaw-run-onboard.sh "$model_access_key" "$onboard_provider" "$onboard_model"; then
+    echo "Failed to configure provider. Check /tmp/zeroclaw-onboard.log" >&2
+    exit 1
+  fi
   umask 077
   touch "$SETUP_MARKER"
   chmod 600 "$SETUP_MARKER"
@@ -177,11 +204,12 @@ echo ""
 echo "To set up a domain with automatic HTTPS, run:"
 echo "  sudo /opt/setup-zeroclaw-domain.sh"
 echo ""
-echo "Check the pairing code with:"
-echo "  journalctl -u zeroclaw --no-pager | grep -i pairing"
+echo "Get a gateway pairing code with:"
+echo "  /opt/zeroclaw-cli.sh gateway get-paircode --new"
 echo ""
 echo "Or use the CLI:"
 echo "  /opt/zeroclaw-cli.sh status"
+echo "  /opt/zeroclaw-cli.sh agent -a assistant -m \"Hello\""
 echo ""
 echo "Setup complete!"
 

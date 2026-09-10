@@ -1,24 +1,36 @@
 #!/bin/bash
 
 # OpenCode First-Login Setup Wizard
-# Prompts for a DigitalOcean Gradient model access key and configures OpenCode.
+# Prompts for a DigitalOcean model access key, lists live models, and
+# configures OpenCode.
 
 SETUP_MARKER="/root/.opencode_setup_complete"
 CONFIG_FILE="/root/.config/opencode/opencode.json"
 AUTH_FILE="/root/.local/share/opencode/auth.json"
+ENV_FILE="/opt/opencode.env"
+INFERENCE_MODELS_LIB="/var/lib/digitalocean/inference-models.sh"
 
 remove_first_login_hook() {
   sed -i '/\/opt\/setup-opencode\.sh/d' /root/.bashrc 2>/dev/null || true
 }
 
-try_apply_gradient_from_env() {
+save_env_kv() {
+  local key="$1" val="$2"
+  touch "$ENV_FILE"
+  grep -v "^${key}=" "$ENV_FILE" > "${ENV_FILE}.tmp" 2>/dev/null || : > "${ENV_FILE}.tmp"
+  printf '%s=%q\n' "$key" "$val" >> "${ENV_FILE}.tmp"
+  mv "${ENV_FILE}.tmp" "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+}
+
+try_apply_inference_from_env() {
   set -a
   # shellcheck source=/dev/null
   source /etc/environment 2>/dev/null || true
   set +a
 
-  if [ -x /opt/apply-gradient-from-env.sh ] && /opt/apply-gradient-from-env.sh; then
-    echo "Gradient configured from droplet environment."
+  if [ -x /opt/apply-inference-from-env.sh ] && /opt/apply-inference-from-env.sh; then
+    echo "DigitalOcean Serverless Inference configured from droplet environment."
     remove_first_login_hook
     return 0
   fi
@@ -27,11 +39,11 @@ try_apply_gradient_from_env() {
 }
 
 # Startup scripts may land in /etc/environment after 001_onboot; retry before prompting.
-if [ "$1" != "--force" ] && try_apply_gradient_from_env; then
+if [ "$1" != "--force" ] && try_apply_inference_from_env; then
   exit 0
 fi
 
-gradient_already_configured() {
+inference_already_configured() {
   local configured_key
 
   if [ -f "$SETUP_MARKER" ]; then
@@ -42,7 +54,7 @@ gradient_already_configured() {
   if [ -f "$AUTH_FILE" ]; then
     configured_key=$(jq -r '.digitalocean.key // empty' "$AUTH_FILE" 2>/dev/null || true)
     if [ -n "$configured_key" ] && [ "$configured_key" != "null" ]; then
-      echo "DigitalOcean Gradient is already configured"
+      echo "DigitalOcean Serverless Inference is already configured"
       return 0
     fi
   fi
@@ -50,89 +62,163 @@ gradient_already_configured() {
   return 1
 }
 
-configured_reason=$(gradient_already_configured || true)
+configured_reason=$(inference_already_configured || true)
 if [ -n "$configured_reason" ] && [ "$1" != "--force" ]; then
   echo "${configured_reason}. Skipping setup wizard."
   remove_first_login_hook
   exit 0
 fi
 
+if [ ! -f "$INFERENCE_MODELS_LIB" ]; then
+  echo "ERROR: missing $INFERENCE_MODELS_LIB" >&2
+  exit 1
+fi
+# shellcheck source=/var/lib/digitalocean/inference-models.sh
+. "$INFERENCE_MODELS_LIB"
+
 echo ""
 echo "========================================================================"
-echo "  OpenCode Setup - DigitalOcean Gradient AI"
+echo "  OpenCode Setup - DigitalOcean Serverless Inference"
 echo "========================================================================"
 echo ""
-echo "This droplet is pre-configured with DigitalOcean Gradient AI, which gives"
-echo "you access to top coding models through a single Gradient model access key:"
+echo "This droplet is pre-configured with DigitalOcean Serverless Inference. A single"
+echo "model access key unlocks the current chat model catalog"
+echo "(fetched live from the inference API) plus the Intelligent Inference Router."
 echo ""
-echo "  digitalocean/ (OpenAI-compatible):  GPT-5.2, GPT-5, GPT-4.1, o3,"
-echo "    DeepSeek R1 70B, Qwen3 32B, Llama 3.3 70B, Kimi K2.5 (default),"
-echo "    glm-5, MiniMax M2.5, Claude Opus 4.6, Opus 4.5, Sonnet 4.5, Sonnet 4"
-echo ""
-echo "To create a Gradient model access key:"
+echo "To create a DigitalOcean model access key:"
 echo "  1. Go to https://cloud.digitalocean.com/gen-ai"
 echo "  2. Navigate to API Keys > Model Access Keys"
 echo "  3. Click 'Create Model Access Key'"
 echo ""
 
-read -p "Enter your Gradient model access key (or press Enter to skip): " MODEL_KEY
+old_histfile="${HISTFILE-}"
+unset HISTFILE
+read -rsp "Enter your DigitalOcean model access key (or press Enter to skip): " MODEL_KEY
+echo ""
+[ -n "${old_histfile:-}" ] && export HISTFILE="$old_histfile"
 
 if [ -z "$MODEL_KEY" ]; then
   echo ""
   echo "Setup skipped. You can configure your key later by running:"
   echo "  /opt/setup-opencode.sh"
   echo ""
-  # Don't mark complete so it runs again next login
   exit 0
 fi
 
-# Write the auth.json file for the Gradient OpenAI-compatible provider.
-mkdir -p /root/.local/share/opencode
-cat > /root/.local/share/opencode/auth.json << EOF
-{
-  "digitalocean": {
-    "type": "api",
-    "key": "${MODEL_KEY}"
-  },
-  "do-anthropic": {
-    "type": "api",
-    "key": "${MODEL_KEY}"
-  }
-}
-EOF
-chmod 600 /root/.local/share/opencode/auth.json
-
-# Substitute Gradient key into opencode.json (do-anthropic authToken placeholder).
-if [ -f "$CONFIG_FILE" ] && grep -q '%API_TOKEN%' "$CONFIG_FILE" 2>/dev/null; then
-  ESC_KEY=$(printf '%s\n' "$MODEL_KEY" | sed 's/\\/\\\\/g; s/&/\\&/g; s/|/\\|/g')
-  sed -i "s|%API_TOKEN%|${ESC_KEY}|g" "$CONFIG_FILE"
-fi
-
 echo ""
-echo "Testing connection to DigitalOcean Gradient..."
+echo "Fetching available models from DigitalOcean Serverless Inference..."
 
-HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-  -H "Authorization: Bearer ${MODEL_KEY}" \
-  -H "Content-Type: application/json" \
-  https://inference.do-ai.run/v1/models 2>/dev/null)
+json=""
+chat_ids=""
+INFERENCE_MODEL=""
+DO_INFERENCE_ROUTER=""
+while true; do
+  if json="$(fetch_inference_models_json "$MODEL_KEY")"; then
+    chat_ids="$(printf '%s' "$json" | parse_inference_model_ids | filter_chat_inference_models)"
+    if [ -z "$chat_ids" ]; then
+      chat_ids="$(printf '%s' "$json" | parse_inference_model_ids)"
+    fi
+    if [ -n "$chat_ids" ]; then
+      break
+    fi
+    echo "The Serverless Inference API returned no models for this key."
+  else
+    status="${INFERENCE_MODELS_HTTP_STATUS:-000}"
+    if [ "$status" = "401" ] || [ "$status" = "403" ]; then
+      echo "That key was rejected (HTTP ${status})."
+    else
+      echo "Could not list models from https://inference.do-ai.run/v1/models (HTTP ${status})."
+    fi
+  fi
 
-if [ "$HTTP_STATUS" = "200" ]; then
-  echo "Connection successful! Your key is valid."
-else
-  echo "Warning: Received HTTP $HTTP_STATUS from the Gradient API."
-  echo "Your key has been saved. If it's incorrect, re-run: /opt/setup-opencode.sh"
+  echo ""
+  echo "You can re-enter the key, type a model id to use this key anyway, or skip."
+  old_histfile="${HISTFILE-}"
+  unset HISTFILE
+  read -rsp "Re-enter your DigitalOcean model access key (or press Enter to keep the current key): " NEW_KEY
+  echo ""
+  [ -n "${old_histfile:-}" ] && export HISTFILE="$old_histfile"
+  if [ -n "${NEW_KEY}" ]; then
+    MODEL_KEY="$NEW_KEY"
+    continue
+  fi
+
+  read -rp "Enter an inference model id (or press Enter to skip setup): " INFERENCE_MODEL
+  if [ -n "${INFERENCE_MODEL}" ]; then
+    chat_ids=""
+    break
+  fi
+
+  echo ""
+  echo "Setup skipped. Re-run later: /opt/setup-opencode.sh"
+  echo ""
+  exit 0
+done
+
+CHOSEN_LABEL=""
+if [ -n "$chat_ids" ]; then
+  default_model="$(printf '%s\n' "$chat_ids" | pick_default_inference_model)"
+  echo ""
+  echo "Choose a default model (you can switch later with /models):"
+  echo ""
+  i=1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    printf "  %2d) %s\n" "$i" "$line"
+    i=$((i + 1))
+  done <<<"$chat_ids"
+  echo "   R) DigitalOcean Intelligent Inference Router (auto-picks the best model)"
+  echo ""
+  count=$((i - 1))
+  read -rp "Selection [1-${count} / R, or Enter for ${default_model}]: " SEL
+
+  if [ "$SEL" = "R" ] || [ "$SEL" = "r" ]; then
+    echo ""
+    echo "Create a router under Inference > Routers, then enter its name."
+    read -rp "Router name: " ROUTER_NAME
+    if [ -n "$ROUTER_NAME" ]; then
+      ROUTER_NAME="${ROUTER_NAME#digitalocean/}"
+      ROUTER_NAME="${ROUTER_NAME#router:}"
+      DO_INFERENCE_ROUTER="$ROUTER_NAME"
+      CHOSEN_LABEL="Intelligent Inference Router (digitalocean/router:${ROUTER_NAME})"
+    else
+      echo "No router name entered; keeping ${default_model}."
+      INFERENCE_MODEL="$default_model"
+    fi
+  elif ! INFERENCE_MODEL="$(printf '%s\n' "$chat_ids" | resolve_inference_model_choice "$SEL")"; then
+    echo "Invalid selection; using ${default_model}."
+    INFERENCE_MODEL="$default_model"
+  fi
 fi
 
-# Mark setup as complete
-touch "$SETUP_MARKER"
+save_env_kv MODEL_ACCESS_KEY "$MODEL_KEY"
+export MODEL_ACCESS_KEY="$MODEL_KEY"
+if [ -n "$DO_INFERENCE_ROUTER" ]; then
+  save_env_kv DO_INFERENCE_ROUTER "$DO_INFERENCE_ROUTER"
+  export DO_INFERENCE_ROUTER
+  save_env_kv INFERENCE_MODEL ""
+  export INFERENCE_MODEL=""
+else
+  save_env_kv INFERENCE_MODEL "$INFERENCE_MODEL"
+  save_env_kv DO_INFERENCE_ROUTER ""
+  export INFERENCE_MODEL
+  export DO_INFERENCE_ROUTER=""
+fi
 
+/opt/apply-inference-from-env.sh
+
+if [ -z "$CHOSEN_LABEL" ]; then
+  CHOSEN_LABEL="digitalocean/${INFERENCE_MODEL}"
+fi
+
+touch "$SETUP_MARKER"
 remove_first_login_hook
 
 echo ""
 echo "========================================================================"
 echo "  Setup complete! OpenCode is ready to use."
 echo ""
-echo "  Default model: Kimi K2.5 (digitalocean/kimi-k2.5)"
+echo "  Default model: ${CHOSEN_LABEL}"
 echo ""
 echo "  To start:  cd /path/to/your/project && opencode"
 echo "  Config:    /root/.config/opencode/opencode.json"
